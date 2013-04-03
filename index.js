@@ -1,5 +1,5 @@
 (function() {
-  var JTFileSystem, async, fs, path, _;
+  var JTFileSystem, async, fs, noop, path, _;
 
   _ = require('underscore');
 
@@ -8,6 +8,8 @@
   async = require('async');
 
   path = require('path');
+
+  noop = function() {};
 
   JTFileSystem = (function() {
 
@@ -103,113 +105,191 @@
       return this;
     };
 
+    /**
+     * filterFiles 筛选文件
+     * @param  {Array} files 需要筛选的文件
+     * @param  {Function, Object} filter 自定义筛选函数或者使用默认的筛选方式{ext : '.txt', size : '>1000', contain : 'abc'}默认是多个条件是and，如果想使用or的方式，在filter中添加字段{type : 'or'}，还可以筛选atime, mtime, ctime
+     * @param  {Function} cbf 回调函数(err, files)
+     * @return {[type]}        [description]
+    */
+
+
     JTFileSystem.prototype.filterFiles = function(files, filter, cbf) {
-      var filterFuncs, getContainFilter, getExtFilter, getHandle, getSizeFilter, handle;
-      getExtFilter = function(ext) {
-        return function(file, cbf) {
-          var accord, extName;
-          extName = path.extname(file);
-          if (_.isArray(ext)) {
-            accord = _.contains(ext, extName);
-          } else {
-            accord = extName === ext;
-          }
-          return GLOBAL.setImmediate(function() {
-            return cbf(accord);
-          });
-        };
-      };
-      getSizeFilter = function(size) {
-        var gt;
-        if (size.charAt(0) === '>') {
-          gt = true;
-        } else {
-          gt = false;
-        }
-        size = size.substring(1);
-        return function(file, cbf) {
-          return fs.stat(file, function(err, stats) {
-            var fileSize;
-            if (err) {
-              return cbf(false);
-            } else {
-              fileSize = stats != null ? stats.size : void 0;
-              if (gt) {
-                return cbf(fileSize > size);
-              } else {
-                return cbf(fileSize < size);
-              }
-            }
-          });
-        };
-      };
-      getContainFilter = function(partFileName) {
-        return function(file, cbf) {
-          var accord;
-          if (~file.indexOf(partFileName)) {
-            accord = true;
-          } else {
-            accord = false;
-          }
-          return GLOBAL.setImmediate(function() {
-            return cbf(accord);
-          });
-        };
-      };
-      getHandle = function(filterFuncs, type) {
-        if (type == null) {
-          type = 'and';
-        }
-        return function(file, cbf) {
-          var checkCount, maxCheckCount;
-          checkCount = 0;
-          maxCheckCount = filterFuncs.length;
-          return async.whilst(function() {
-            return checkCount !== -1 && checkCount < maxCheckCount;
-          }, function(cbf) {
-            return filterFuncs[checkCount](file, function(accord) {
-              if (type === 'or') {
-                if (accord) {
-                  checkCount === -1;
-                } else {
-                  checkCount++;
-                }
-              } else {
-                if (!accord) {
-                  checkCount = -1;
-                } else {
-                  checkCount++;
-                }
-              }
-              return cbf(null);
-            });
-          }, function() {
-            if (type === 'or') {
-              return cbf(checkCount === -1);
-            } else {
-              return cbf(checkCount === maxCheckCount);
-            }
-          });
-        };
-      };
+      var filterFuncs, filterType, handler, self;
+      self = this;
       filterFuncs = [];
+      filterType = filter != null ? filter.type : void 0;
+      delete filter.type;
       if (_.isFunction(filter)) {
         filterFuncs.push(filter);
+      } else if (_.isObject(filter)) {
+        _.each(filter, function(value, key) {
+          return filterFuncs.push(self._getFilter(key, value));
+        });
       }
-      if (filter.ext) {
-        filterFuncs.push(getExtFilter(filter.ext));
-      }
-      if (filter.size) {
-        filterFuncs.push(getSizeFilter(filter.size));
-      }
-      if (filter.contain) {
-        filterFuncs.push(getContainFilter(filter.contain));
-      }
-      handle = getHandle(filterFuncs, filter.type);
-      async.filterSeries(files, handle, function(result) {
+      handler = self._getHandler(filterFuncs, filterType);
+      async.filterSeries(files, handler, function(result) {
         return cbf(null, result);
       });
       return this;
+    };
+
+    /**
+     * _getHandler 获取处理程序
+     * @param  {Array} filterFuncs 筛选函数数组
+     * @param  {String} type 筛选的方式，默认值为'and'
+     * @return {[type]}             [description]
+    */
+
+
+    JTFileSystem.prototype._getHandler = function(filterFuncs, type) {
+      if (type == null) {
+        type = 'and';
+      }
+      return function(file, cbf) {
+        var checkCount, maxCheckCount;
+        checkCount = 0;
+        maxCheckCount = filterFuncs.length;
+        return async.whilst(function() {
+          return checkCount !== -1 && checkCount < maxCheckCount;
+        }, function(cbf) {
+          return filterFuncs[checkCount](file, function(accord) {
+            if (type === 'or') {
+              if (accord) {
+                checkCount === -1;
+              } else {
+                checkCount++;
+              }
+            } else {
+              if (!accord) {
+                checkCount = -1;
+              } else {
+                checkCount++;
+              }
+            }
+            return cbf(null);
+          });
+        }, function() {
+          if (type === 'or') {
+            return cbf(checkCount === -1);
+          } else {
+            return cbf(checkCount === maxCheckCount);
+          }
+        });
+      };
+    };
+
+    /**
+     * _getFilter 获取筛选函数
+     * @param  {String} type  筛选类型，有：ext, size, contain, mtime, atime, ctime
+     * @param  {[type]} value 用于筛选的值
+     * @return {[type]}       [description]
+    */
+
+
+    JTFileSystem.prototype._getFilter = function(type, value) {
+      var filters, func, getTimeFilter;
+      getTimeFilter = function(type) {
+        if (type == null) {
+          type = 'mtime';
+        }
+        return function(time) {
+          var compareFlag, compareType;
+          compareType = 0;
+          if (_.isString(time)) {
+            compareFlag = time.charAt(0);
+            if (compareFlag === '>') {
+              compareType = 1;
+            } else if (compareFlag === '<') {
+              compareType = -1;
+            }
+            time = new Date(time.substring(1));
+          }
+          return function(file, cbf) {
+            return fs.stat(file, function(err, stats) {
+              var resultTime;
+              if (err) {
+                return cbf(false);
+              } else {
+                resultTime = stats[type];
+                if (compareType > 0) {
+                  return cbf(resultTime > time);
+                } else if (compareType < 0) {
+                  return cbf(resultTime < time);
+                } else {
+                  return cbf(resultTime === time);
+                }
+              }
+            });
+          };
+        };
+      };
+      filters = {
+        ext: function(ext) {
+          return function(file, cbf) {
+            var accord, extName;
+            extName = path.extname(file);
+            if (_.isArray(ext)) {
+              accord = _.contains(ext, extName);
+            } else {
+              accord = extName === ext;
+            }
+            return GLOBAL.setImmediate(function() {
+              return cbf(accord);
+            });
+          };
+        },
+        size: function(size) {
+          var compareFlag, compareType;
+          compareFlag = size.charAt(0);
+          compareType = 0;
+          if (compareFlag === '>') {
+            compareType = 1;
+          } else if (compareFlag === '<') {
+            compareType = -1;
+          }
+          size = size.substring(1);
+          return function(file, cbf) {
+            return fs.stat(file, function(err, stats) {
+              var fileSize;
+              if (err) {
+                return cbf(false);
+              } else {
+                fileSize = stats.size;
+                if (compareType > 0) {
+                  return cbf(fileSize > size);
+                } else if (compareType < 0) {
+                  return cbf(fileSize < size);
+                } else {
+                  return cbf(fileSize === size);
+                }
+              }
+            });
+          };
+        },
+        contain: function(partFileName) {
+          return function(file, cbf) {
+            var accord;
+            if (~file.indexOf(partFileName)) {
+              accord = true;
+            } else {
+              accord = false;
+            }
+            return GLOBAL.setImmediate(function() {
+              return cbf(accord);
+            });
+          };
+        }
+      };
+      _.each('mtime atime ctime'.split(' '), function(value) {
+        return filters[value] = getTimeFilter(value);
+      });
+      func = filters[type];
+      if (_.isFunction(func)) {
+        return func(value);
+      } else {
+        return noop;
+      }
     };
 
     return JTFileSystem;
