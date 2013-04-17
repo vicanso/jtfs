@@ -31,6 +31,10 @@
       } else {
         searchPaths = _.clone(searchPaths);
       }
+      if (_.isFunction(recursion)) {
+        cbf = recursion;
+        recursion = false;
+      }
       resultInfos = {
         files: [],
         dirs: []
